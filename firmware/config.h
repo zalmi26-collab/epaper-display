@@ -10,7 +10,7 @@
 // ── Where to download the rendered BMP ──────────────────────────────────────
 // After pushing the project to GitHub and enabling Pages on the gh-pages
 // branch, this URL hosts the latest 800x480 1-bit BMP refreshed hourly.
-#define IMAGE_URL "https://YOUR_USERNAME.github.io/YOUR_REPO/display.bmp"
+#define IMAGE_URL "https://zalmi26-collab.github.io/epaper-display/display.bmp"
 
 // ── Time sync ───────────────────────────────────────────────────────────────
 #define NTP_SERVER "pool.ntp.org"
