@@ -39,8 +39,13 @@ jobs:
 
       - name: Render display image
         env:
-          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
-        run: python server/main.py
+          RAW_CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
+        run: |
+          # Strip any whitespace (incl. trailing newline added by paste) so the
+          # value reaches Python as a clean Calendar ID.
+          export CALENDAR_ID="$(printf '%s' "$RAW_CALENDAR_ID" | tr -d '[:space:]')"
+          echo "calendar id length: ${#CALENDAR_ID}"
+          python server/main.py
 
       - name: Verify BMP exists
         run: |
