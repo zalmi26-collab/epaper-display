@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-05-01T19:30:00+03:00",
+  "next_update_at": "2026-05-01T20:00:00+03:00",
+  "clock_area": {
+    "x": 520,
+    "y": 0,
+    "width": 280,
+    "height": 120
+  },
+  "date": {
+    "gregorian": "01.05.2026",
+    "hebrew": "י״ד אייר תשפ״ו",
+    "weekday_he": "יום שישי"
+  },
+  "weather": {
+    "city": "בית שמש",
+    "temp_max": 23,
+    "temp_min": 13,
+    "precipitation_chance": 60,
+    "sunrise": "05:58",
+    "sunset": "19:16"
+  },
+  "shabbat_box": {
+    "title": "פרשת אמור",
+    "candles": "19:02",
+    "sunset": "19:20",
+    "havdalah": "20:01",
+    "is_holiday": false
+  },
+  "events_timed": [],
+  "events_all_day": [],
+  "omer": {
+    "day": 29,
+    "text": "הַיּוֹם תִּשְׁעָה וְעֶשְׂרִים יוֹם, שֶׁהֵם אַרְבָּעָה שָׁבוּעוֹת וְיוֹם אֶחָד לָעֽוֹמֶר"
+  },
+  "night_mode": false
+}
