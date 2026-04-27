@@ -29,5 +29,7 @@ OUTPUT_DAY_BMP = OUTPUT_DIR / "display.bmp"  # the file the ESP32 downloads
 SERVICE_ACCOUNT_PATH = os.environ.get(
     "GOOGLE_SERVICE_ACCOUNT_PATH",
     str(PROJECT_ROOT / "secrets" / "service_account.json"),
-)
-CALENDAR_ID = os.environ.get("CALENDAR_ID", "")  # may be empty in dev
+).strip()
+# strip whitespace — GitHub Secrets sometimes carry a trailing newline that
+# breaks downstream URL building (404 from the Calendar API).
+CALENDAR_ID = os.environ.get("CALENDAR_ID", "").strip()
