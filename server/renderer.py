@@ -15,10 +15,26 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, features
 from bidi.algorithm import get_display
 
 logger = logging.getLogger(__name__)
+
+# Apply the Unicode bidirectional algorithm exactly once. Pillow's manylinux
+# wheels are now built against libraqm and re-bidi any Hebrew they're given,
+# so on CI we pass logical-order text + direction="rtl"/"ltr" and let libraqm
+# handle reordering. Locally (no libraqm) we pre-reorder with python-bidi and
+# omit the `direction` kwarg, which Pillow rejects without libraqm.
+HAS_RAQM = features.check("raqm")
+
+
+def _prepare(text: str, base_dir: str) -> tuple[str, dict]:
+    """Return (text, kwargs) ready for Pillow's draw.text / font.getbbox."""
+    if HAS_RAQM:
+        return text, {"direction": base_dir}
+    # base_dir 'L' / 'R' here mirrors python-bidi's expectation
+    return get_display(text, base_dir="L" if base_dir == "ltr" else "R"), {}
+
 
 CANVAS_W = 800
 CANVAS_H = 480
@@ -86,10 +102,10 @@ def _draw_text_rtl(
     font: ImageFont.FreeTypeFont,
     fill: int = 0,
 ) -> int:
-    """Draw Hebrew (or mixed) text right-aligned. Returns drawn width."""
-    visual = get_display(text)
-    draw.text(right_top_xy, visual, font=font, fill=fill, anchor="rt")
-    bbox = font.getbbox(visual)
+    """Draw Hebrew (or Hebrew-primary mixed) text right-aligned."""
+    rendered, kwargs = _prepare(text, "rtl")
+    draw.text(right_top_xy, rendered, font=font, fill=fill, anchor="rt", **kwargs)
+    bbox = font.getbbox(rendered, **kwargs)
     return bbox[2] - bbox[0]
 
 
@@ -100,9 +116,10 @@ def _draw_text_ltr(
     font: ImageFont.FreeTypeFont,
     fill: int = 0,
 ) -> int:
-    """Draw left-to-right text. For pure numbers / Latin / dates."""
-    draw.text(left_top_xy, text, font=font, fill=fill, anchor="lt")
-    bbox = font.getbbox(text)
+    """Draw pure-LTR text (numbers, Latin, dates) — no bidi reordering needed."""
+    kwargs = {"direction": "ltr"} if HAS_RAQM else {}
+    draw.text(left_top_xy, text, font=font, fill=fill, anchor="lt", **kwargs)
+    bbox = font.getbbox(text, **kwargs)
     return bbox[2] - bbox[0]
 
 
@@ -113,10 +130,10 @@ def _draw_text_mixed(
     font: ImageFont.FreeTypeFont,
     fill: int = 0,
 ) -> int:
-    """Left-anchored text with bidi reordering — for time labels with Hebrew tags."""
-    visual = get_display(text)
-    draw.text(left_top_xy, visual, font=font, fill=fill, anchor="lt")
-    bbox = font.getbbox(visual)
+    """Left-anchored mixed text starting with LTR (e.g. '14:30 (מחר)')."""
+    rendered, kwargs = _prepare(text, "ltr")
+    draw.text(left_top_xy, rendered, font=font, fill=fill, anchor="lt", **kwargs)
+    bbox = font.getbbox(rendered, **kwargs)
     return bbox[2] - bbox[0]
 
 

@@ -13,10 +13,13 @@ import math
 import random
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, features
 from bidi.algorithm import get_display
 
 logger = logging.getLogger(__name__)
+
+# Same one-shot bidi detection used by renderer.py — see that file for context.
+HAS_RAQM = features.check("raqm")
 
 CANVAS_W = 800
 CANVAS_H = 480
@@ -98,12 +101,17 @@ def _draw_star(draw: ImageDraw.ImageDraw, cx: int, cy: int, size: int) -> None:
 def _draw_greeting(draw: ImageDraw.ImageDraw) -> None:
     """Center a large 'לילה טוב' near the bottom."""
     font = ImageFont.truetype(FRANK_PATH, 96)
-    visual = get_display(GREETING_TEXT)
-    bbox = font.getbbox(visual)
+    if HAS_RAQM:
+        rendered = GREETING_TEXT
+        kwargs = {"direction": "rtl"}
+    else:
+        rendered = get_display(GREETING_TEXT, base_dir="R")
+        kwargs = {}
+    bbox = font.getbbox(rendered, **kwargs)
     text_w = bbox[2] - bbox[0]
     x = (CANVAS_W - text_w) // 2
     y = 380
-    draw.text((x, y), visual, font=font, fill=0, anchor="lt")
+    draw.text((x, y), rendered, font=font, fill=0, anchor="lt", **kwargs)
 
 
 if __name__ == "__main__":
