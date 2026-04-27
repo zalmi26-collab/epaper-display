@@ -8,7 +8,11 @@
 #include <time.h>
 
 uint32_t powerReadBatteryMv() {
-  // Take 10 samples and average; the ADC on ESP32-C3 is noisy.
+  // The XIAO ePaper Driver Board doesn't expose a battery divider on any
+  // free GPIO. Skip the ADC read and report a healthy default — the icon
+  // will always render as "high" until a hardware revision adds a sense pin.
+  if (BATTERY_ADC_PIN < 0) return 4100;
+
   analogReadResolution(12);
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);  // up to ~3.3 V on the pin
 

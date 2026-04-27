@@ -28,21 +28,24 @@
 #define CLOCK_W       280
 #define CLOCK_H       120
 
-// ── Pin assignments (XIAO ESP32-C3 → Waveshare 7.5" V2 e-paper) ─────────────
-// Verify these against your wiring before first upload.
-// XIAO labels are silk-screen pin numbers (D0..D10), GPIO numbers in comments.
-#define EPD_CS    3   // D1  / GPIO3
-#define EPD_DC    4   // D2  / GPIO4
-#define EPD_RST   5   // D3  / GPIO5
-#define EPD_BUSY  6   // D4  / GPIO6
+// ── Pin assignments (Seeed XIAO ePaper Driver Board V2 + 7.5" panel) ────────
+// These are fixed by the carrier-board hardware and match the upstream
+// Seeed/EpaperPix Arduino sketches. XIAO labels (D0..D10) shown with the
+// matching GPIO numbers.
+#define EPD_CS    3   // D1 / GPIO3
+#define EPD_DC    5   // D3 / GPIO5
+#define EPD_RST   2   // D0 / GPIO2
+#define EPD_BUSY  4   // D2 / GPIO4
 // SPI hardware pins are fixed on the XIAO C3:
 //   SCK  = D8  / GPIO8
 //   MOSI = D10 / GPIO10
 //   MISO = D9  / GPIO9 (unused by e-paper)
 
 // ── Battery measurement ─────────────────────────────────────────────────────
-// XIAO ESP32-C3 has no built-in battery divider — wire VBAT through a 1:2
-// voltage divider (e.g. 100k / 100k) into A0/D0/GPIO2.
-#define BATTERY_ADC_PIN 2   // GPIO2 (A0)
+// The Seeed XIAO ePaper Driver Board does not expose a battery-voltage
+// divider on any free GPIO — every ADC-capable pin (GPIO 2..5) is taken by
+// the panel SPI signals above. With BATTERY_ADC_PIN < 0 the firmware skips
+// the ADC read and the battery icon is always drawn as "high".
+#define BATTERY_ADC_PIN       -1
 #define BATTERY_DIVIDER_RATIO 2.0f
-#define BATTERY_VREF_MV       3300   // ESP32-C3 default reference (mV)
+#define BATTERY_VREF_MV       3300
