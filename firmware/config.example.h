@@ -1,5 +1,9 @@
-// config.h — fill in WiFi credentials and the gh-pages URL once,
-// then upload to the XIAO ESP32-C3.
+// config.example.h — template. Copy this file to config.h and fill in your
+// WiFi credentials. config.h is gitignored so your password never reaches
+// GitHub.
+//
+//   cp firmware/config.example.h firmware/config.h
+//   # then edit firmware/config.h and set WIFI_SSID / WIFI_PASSWORD
 
 #pragma once
 

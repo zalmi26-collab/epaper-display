@@ -24,6 +24,10 @@ firmware/build/
 *.hex
 *.elf
 
+# Local firmware config (contains WiFi password). The committed template is
+# firmware/config.example.h.
+firmware/config.h
+
 # OS
 .DS_Store
 Thumbs.db
