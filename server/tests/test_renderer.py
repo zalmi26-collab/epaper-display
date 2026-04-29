@@ -1,82 +1,102 @@
-"""Snapshot tests for server/renderer.py.
+"""Renderer tests.
 
-Renders each model_*.json fixture and compares the SHA-256 of the output BMP
-against a stored snapshot under tests/snapshots/. To intentionally update
-snapshots after a renderer change, set UPDATE_SNAPSHOTS=1 in the env.
-"""
+Note on snapshots: the previous Pillow renderer rendered byte-deterministically
+across machines, so we used SHA-256 snapshots. The new renderer goes through
+headless Chromium, where rendering varies slightly across Chromium versions
+and platforms (font hinting, sub-pixel positioning). Snapshot-by-hash would be
+flaky in CI for cosmetic reasons.
+
+Instead these tests assert the *structural* invariants the firmware cares
+about: the BMP exists at the requested path, has the right dimensions, is
+1-bit, and contains both black and white pixels (i.e., the screen actually
+rendered — not a blank canvas)."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from renderer import render_to_bmp  # noqa: E402
-from night_mode import render_night_mode  # noqa: E402
+from renderer import CANVAS_H, CANVAS_W, render_to_bmp  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
-SNAPSHOTS_DIR = Path(__file__).resolve().parent / "snapshots"
 
 
-def sha256_of(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+class RendererTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp())
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmp, ignore_errors=True)
 
-class RendererSnapshotTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
+    def _render(self, fixture_name: str) -> Path:
+        fixture = FIXTURES_DIR / fixture_name
+        with fixture.open(encoding="utf-8") as f:
+            data = json.load(f)
+        out = self.tmp / fixture.with_suffix(".bmp").name
+        render_to_bmp(data, str(out))
+        return out
 
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _check_snapshot(self, snapshot_name: str, current_path: Path) -> None:
-        snap = SNAPSHOTS_DIR / snapshot_name
-        if os.environ.get("UPDATE_SNAPSHOTS") == "1":
-            SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.copy(current_path, snap)
-            print(f"[update] wrote {snap}")
-            return
-        if not snap.exists():
-            self.fail(
-                f"missing snapshot {snap} — run with UPDATE_SNAPSHOTS=1 to create it"
-            )
-        actual = sha256_of(current_path)
-        expected = sha256_of(snap)
+    def _assert_valid_bmp(self, path: Path) -> Image.Image:
+        self.assertTrue(path.exists(), f"BMP not written to {path}")
+        img = Image.open(path)
+        self.assertEqual(img.mode, "1", "BMP must be 1-bit (mode '1')")
         self.assertEqual(
-            actual, expected,
-            f"{snapshot_name} drifted from snapshot. Inspect both BMPs and, if "
-            "the change is intentional, re-run with UPDATE_SNAPSHOTS=1.",
+            img.size, (CANVAS_W, CANVAS_H),
+            f"BMP must be {CANVAS_W}x{CANVAS_H}, got {img.size}",
         )
+        return img
 
-    def test_each_fixture_matches_snapshot(self) -> None:
-        fixtures = sorted(FIXTURES_DIR.glob("model_*.json"))
-        self.assertGreater(len(fixtures), 0, "no fixtures found in tests/fixtures")
-        for fx in fixtures:
-            with self.subTest(fixture=fx.name):
-                with fx.open(encoding="utf-8") as f:
-                    model = json.load(f)
-                out = self.tmp / f"{fx.stem}.bmp"
-                render_to_bmp(model, str(out))
-                self._check_snapshot(fx.with_suffix(".bmp").name.replace("model_", "render_"), out)
+    def _assert_not_blank(self, img: Image.Image) -> None:
+        # `1`-mode images return 0 (black) and 255 (white). A blank screen
+        # would only have 255s. Confirm both colors are present.
+        colors = img.getcolors()
+        self.assertIsNotNone(colors, "Could not enumerate BMP colors")
+        values = sorted(c[1] for c in colors)
+        self.assertEqual(values, [0, 255], f"BMP has only {values} — looks blank")
 
-    def test_night_mode_snapshot(self) -> None:
-        out = self.tmp / "render_night_mode.bmp"
-        render_night_mode(str(out))
-        self._check_snapshot("render_night_mode.bmp", out)
+    def test_weekday_renders(self) -> None:
+        path = self._render("model_now.json")
+        img = self._assert_valid_bmp(path)
+        self._assert_not_blank(img)
+
+    def test_thursday_morning_renders(self) -> None:
+        # Thursday morning: shabbat strip should appear (visibility window opens
+        # Thu 06:00). The renderer doesn't expose layout, but at minimum the
+        # render must succeed and produce a non-blank canvas.
+        path = self._render("model_thursday_morning.json")
+        img = self._assert_valid_bmp(path)
+        self._assert_not_blank(img)
+
+    def test_friday_evening_renders(self) -> None:
+        path = self._render("model_friday_evening.json")
+        img = self._assert_valid_bmp(path)
+        self._assert_not_blank(img)
+
+    def test_night_mode_renders(self) -> None:
+        # Night mode (00:00..05:00) routes to NightScreen — the canvas is
+        # mostly black with the clock/moon highlights in white.
+        path = self._render("model_night.json")
+        img = self._assert_valid_bmp(path)
+        self._assert_not_blank(img)
+        # Sanity: night mode is dominated by black pixels.
+        colors = dict((v, n) for n, v in img.getcolors())
+        black = colors.get(0, 0)
+        white = colors.get(255, 0)
+        self.assertGreater(
+            black, white,
+            "night mode should be majority-black "
+            f"(got black={black}, white={white})",
+        )
 
 
 if __name__ == "__main__":

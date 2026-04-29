@@ -1,307 +1,169 @@
-"""Renderer — Pillow-based BMP renderer for the e-paper display.
+"""Renderer — Headless Chromium pipeline for the e-paper display.
 
-This is the functional/mock layout: every field from the data model is shown
-in a clearly labeled region, but the visual design is intentionally plain.
-A separate design pass (Claude Design) will replace this file later without
-touching the data flow.
+The visual design lives in ``web/screen.jsx`` (a React component) and
+``web/render.html`` (a single-screen page that mounts it). This module is a
+thin wrapper that:
 
-Output: 800×480 1-bit BMP. The clock_area in the top-right (520..800 × 0..120)
-is left blank — the ESP32 firmware overlays the current minute on top.
+  1. Spins up an in-process HTTP server rooted at ``web/`` so Babel's
+     ``<script type="text/babel" src="screen.jsx">`` request isn't blocked by
+     CORS (it would be, if we used a ``file://`` URL).
+  2. Launches Playwright Chromium (headless).
+  3. Pre-populates ``window.SCREEN_DATA`` with the model dict.
+  4. Loads ``http://127.0.0.1:<port>/render.html``.
+  5. Waits until ``window.SCREEN_READY === true`` (fonts loaded + React mounted
+     + the 1-bit threshold SVG filter rasterized).
+  6. Screenshots the 800x480 ``#artboard`` element.
+  7. Thresholds the PNG to a 1-bit BMP at the requested path.
+
+The CSS-level threshold filter inside ``render.html`` already snaps every
+pixel to pure black/white at the 50% line, so the Pillow conversion below is
+mostly bookkeeping (BMP container, color depth = 1).
+
+Output: 800x480 1-bit BMP. The clock area (520..800 x 0..120) is left blank
+by the design; the ESP32 firmware overlays the live minute on top.
 """
 
 from __future__ import annotations
 
+import http.server
+import io
+import json
 import logging
+import socketserver
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont, features
-from bidi.algorithm import get_display
+from PIL import Image
+from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
-
-# Apply the Unicode bidirectional algorithm exactly once. Pillow's manylinux
-# wheels are now built against libraqm and re-bidi any Hebrew they're given,
-# so on CI we pass logical-order text + direction="rtl"/"ltr" and let libraqm
-# handle reordering. Locally (no libraqm) we pre-reorder with python-bidi and
-# omit the `direction` kwarg, which Pillow rejects without libraqm.
-HAS_RAQM = features.check("raqm")
-
-
-def _prepare(text: str, base_dir: str) -> tuple[str, dict]:
-    """Return (text, kwargs) ready for Pillow's draw.text / font.getbbox."""
-    if HAS_RAQM:
-        return text, {"direction": base_dir}
-    # base_dir 'L' / 'R' here mirrors python-bidi's expectation
-    return get_display(text, base_dir="L" if base_dir == "ltr" else "R"), {}
-
 
 CANVAS_W = 800
 CANVAS_H = 480
 
-# The ESP32 overlays the clock here — keep it blank.
+# The ESP32 overlays the clock here — keep it blank in the design.
 CLOCK_AREA = (520, 0, 800, 120)
 
-FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
-FRANK_PATH = str(FONTS_DIR / "FrankRuhlLibre-Bold.ttf")
-HEEBO_PATH = str(FONTS_DIR / "Heebo-Regular.ttf")
+# Locate web/ relative to this file (server/renderer.py → ../web/).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = PROJECT_ROOT / "web"
+RENDER_HTML = WEB_DIR / "render.html"
+
+# How long to wait for fonts + React to settle before screenshotting.
+# Google Fonts CDN is the slowest dependency; 30s is generous.
+READY_TIMEOUT_MS = 30_000
 
 
-class FontBook:
-    """Lazy-loaded font cache keyed by (family, size)."""
+@contextmanager
+def _serve_dir(directory: Path):
+    """Serve `directory` over HTTP on a random localhost port for the duration
+    of the context. Yields the port number.
 
-    def __init__(self) -> None:
-        self._cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+    Why an HTTP server instead of ``file://``: Babel-standalone fetches the
+    ``<script type="text/babel" src="screen.jsx">`` via XMLHttpRequest, and
+    Chromium blocks XHRs on ``file://`` origins under CORS. A localhost server
+    sidesteps that without bundling the project."""
+    handler = lambda *a, **kw: _QuietHandler(*a, directory=str(directory), **kw)
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
-    def get(self, family: str, size: int) -> ImageFont.FreeTypeFont:
-        key = (family, size)
-        if key not in self._cache:
-            path = FRANK_PATH if family == "frank" else HEEBO_PATH
-            self._cache[key] = ImageFont.truetype(path, size)
-        return self._cache[key]
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """SimpleHTTPRequestHandler that doesn't spam stdout per request."""
+
+    def log_message(self, format, *args):  # noqa: A002 (matching parent signature)
+        return
 
 
 def render_to_bmp(data: dict, output_path: str) -> None:
-    """Render the data model to a 1-bit BMP at the given path."""
-    # Render in 'L' (8-bit grayscale) for crisp anti-aliased text, then
-    # threshold-convert to '1' (1-bit) without dithering for clean output.
-    img = Image.new("L", (CANVAS_W, CANVAS_H), 255)
-    draw = ImageDraw.Draw(img)
-    fonts = FontBook()
+    """Render the data model to a 1-bit BMP at the given path.
 
-    _draw_top_row(draw, fonts, data["date"])
-    cursor_y = 120
-    draw.line([(0, cursor_y), (CANVAS_W, cursor_y)], fill=0, width=1)
-
-    cursor_y = _draw_weather_and_shabbat_row(draw, fonts, data, top=cursor_y + 5)
-    draw.line([(0, cursor_y), (CANVAS_W, cursor_y)], fill=0, width=1)
-
-    cursor_y = _draw_all_day_events(draw, fonts, data["events_all_day"], top=cursor_y + 5)
-    draw.line([(0, cursor_y), (CANVAS_W, cursor_y)], fill=0, width=1)
-
-    cursor_y = _draw_timed_events(draw, fonts, data["events_timed"], top=cursor_y + 5)
-    draw.line([(0, cursor_y), (CANVAS_W, cursor_y)], fill=0, width=1)
-
-    cursor_y = _draw_omer(draw, fonts, data.get("omer"), top=cursor_y + 5)
-    draw.line([(0, cursor_y), (CANVAS_W, cursor_y)], fill=0, width=1)
-
-    _draw_indicators(draw, fonts, data, top=cursor_y + 5)
-
-    bw = img.convert("1", dither=Image.Dither.NONE)
-    bw.save(output_path, format="BMP")
-    logger.info("Wrote %s × %s 1-bit BMP to %s", CANVAS_W, CANVAS_H, output_path)
-
-
-# ─── helpers ──────────────────────────────────────────────────────────────────
-
-
-def _draw_text_rtl(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    right_top_xy: tuple[int, int],
-    font: ImageFont.FreeTypeFont,
-    fill: int = 0,
-) -> int:
-    """Draw Hebrew (or Hebrew-primary mixed) text right-aligned."""
-    rendered, kwargs = _prepare(text, "rtl")
-    draw.text(right_top_xy, rendered, font=font, fill=fill, anchor="rt", **kwargs)
-    bbox = font.getbbox(rendered, **kwargs)
-    return bbox[2] - bbox[0]
-
-
-def _draw_text_ltr(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    left_top_xy: tuple[int, int],
-    font: ImageFont.FreeTypeFont,
-    fill: int = 0,
-) -> int:
-    """Draw pure-LTR text (numbers, Latin, dates) — no bidi reordering needed."""
-    kwargs = {"direction": "ltr"} if HAS_RAQM else {}
-    draw.text(left_top_xy, text, font=font, fill=fill, anchor="lt", **kwargs)
-    bbox = font.getbbox(text, **kwargs)
-    return bbox[2] - bbox[0]
-
-
-def _draw_text_mixed(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    left_top_xy: tuple[int, int],
-    font: ImageFont.FreeTypeFont,
-    fill: int = 0,
-) -> int:
-    """Left-anchored mixed text starting with LTR (e.g. '14:30 (מחר)')."""
-    rendered, kwargs = _prepare(text, "ltr")
-    draw.text(left_top_xy, rendered, font=font, fill=fill, anchor="lt", **kwargs)
-    bbox = font.getbbox(rendered, **kwargs)
-    return bbox[2] - bbox[0]
-
-
-# ─── sections ─────────────────────────────────────────────────────────────────
-
-
-def _draw_top_row(draw: ImageDraw.ImageDraw, fonts: FontBook, date: dict) -> None:
-    """Top-left: date block. Top-right: clock area (left blank)."""
-    # Date block fits in x: 10..510 (clock takes 520..800)
-    hebrew = date.get("hebrew") or ""
-    gregorian = date.get("gregorian") or ""
-    weekday = date.get("weekday_he") or ""
-
-    if hebrew:
-        _draw_text_rtl(draw, hebrew, (510, 12), fonts.get("frank", 36))
-    if weekday:
-        _draw_text_rtl(draw, weekday, (510, 60), fonts.get("heebo", 26))
-    if gregorian:
-        _draw_text_ltr(draw, gregorian, (10, 60), fonts.get("heebo", 26))
-
-    # CLOCK_AREA is intentionally left blank — the ESP32 firmware overlays the
-    # current minute on top of this region (full refresh hourly + partial
-    # refresh every minute).
-
-
-def _draw_weather_and_shabbat_row(
-    draw: ImageDraw.ImageDraw, fonts: FontBook, data: dict, top: int
-) -> int:
-    """Two-column row: weather on right (520..790), shabbat box on left (10..510)."""
-    weather = data.get("weather") or {}
-    shabbat = data.get("shabbat_box")
-    section_height = 130
-    bottom = top + section_height
-
-    # Vertical separator between the two columns when both visible
-    if shabbat:
-        draw.line([(515, top), (515, bottom - 1)], fill=0, width=1)
-
-    # ── Weather column (right): 520..790 ──
-    _draw_text_rtl(draw, weather.get("city", ""), (790, top), fonts.get("frank", 26))
-    big_temps = f"{weather.get('temp_max', '—')}°/{weather.get('temp_min', '—')}°"
-    _draw_text_ltr(draw, big_temps, (540, top + 28), fonts.get("heebo", 44))
-
-    rain_label = f"גשם {weather.get('precipitation_chance', 0)}%"
-    _draw_text_rtl(draw, rain_label, (790, top + 78), fonts.get("heebo", 20))
-
-    sun_line = (
-        f"זריחה {weather.get('sunrise', '—')}   שקיעה {weather.get('sunset', '—')}"
-    )
-    _draw_text_rtl(draw, sun_line, (790, top + 103), fonts.get("heebo", 20))
-
-    # ── Shabbat box column (left): 10..510 ──
-    if shabbat:
-        _draw_text_rtl(
-            draw, shabbat.get("title", ""), (505, top), fonts.get("frank", 32)
-        )
-        rows = [
-            ("נרות", shabbat.get("candles")),
-            ("שקיעה", shabbat.get("sunset")),
-            ("הבדלה", shabbat.get("havdalah")),
-        ]
-        for i, (label, value) in enumerate(rows):
-            row_y = top + 45 + i * 28
-            _draw_text_rtl(draw, label, (505, row_y), fonts.get("heebo", 22))
-            _draw_text_ltr(draw, value or "—", (15, row_y), fonts.get("heebo", 22))
-
-    return bottom
-
-
-def _draw_all_day_events(
-    draw: ImageDraw.ImageDraw, fonts: FontBook, events: list[dict], top: int
-) -> int:
-    """Thin strip with all-day event titles separated by bullets."""
-    section_height = 30
-    if not events:
-        # Still leave the strip so layout stays predictable, but mark empty.
-        _draw_text_rtl(draw, "אין אירועי כל-יום", (790, top + 4), fonts.get("heebo", 18), fill=128)
-        return top + section_height
-
-    titles = "  •  ".join(ev["title"] for ev in events)
-    _draw_text_rtl(draw, titles, (790, top + 2), fonts.get("heebo", 22))
-    return top + section_height
-
-
-def _draw_timed_events(
-    draw: ImageDraw.ImageDraw, fonts: FontBook, events: list[dict], top: int
-) -> int:
-    """List of timed events: HH:MM on the left, title on the right."""
-    section_height = 110
-    bottom = top + section_height
-
-    if not events:
-        _draw_text_rtl(
-            draw, "אין אירועים עתידיים היום ומחר",
-            (790, top + 50), fonts.get("heebo", 22), fill=128,
-        )
-        return bottom
-
-    line_height = 30
-    max_lines = section_height // line_height
-    for i, ev in enumerate(events[:max_lines]):
-        row_y = top + 2 + i * line_height
-        time_label = ev["start"]
-        if ev.get("is_tomorrow"):
-            time_label += " (מחר)"
-            _draw_text_mixed(draw, time_label, (10, row_y), fonts.get("heebo", 22))
-        else:
-            _draw_text_ltr(draw, time_label, (10, row_y), fonts.get("heebo", 22))
-        # Truncate long titles roughly to the available width
-        title = ev["title"]
-        max_chars = 36
-        if len(title) > max_chars:
-            title = title[: max_chars - 1] + "…"
-        _draw_text_rtl(draw, title, (790, row_y), fonts.get("heebo", 22))
-
-    overflow = len(events) - max_lines
-    if overflow > 0:
-        _draw_text_rtl(
-            draw, f"+ עוד {overflow} אירועים…",
-            (790, top + section_height - 22), fonts.get("heebo", 18), fill=128,
-        )
-
-    return bottom
-
-
-def _draw_omer(
-    draw: ImageDraw.ImageDraw, fonts: FontBook, omer: Optional[dict], top: int
-) -> int:
-    section_height = 30
-    if not omer:
-        return top + section_height
-    text = omer.get("text") or f"היום {omer.get('day')} ימים לעומר"
-    # Frank Ruhl Libre handles full niqqud (vowel marks) where Heebo shows tofu.
-    _draw_text_rtl(draw, text, (790, top + 2), fonts.get("frank", 22))
-    return top + section_height
-
-
-def _draw_indicators(
-    draw: ImageDraw.ImageDraw, fonts: FontBook, data: dict, top: int
-) -> None:
-    """Bottom row: only the server-side refresh timestamp.
-
-    The battery icon and error X are drawn by the ESP32 firmware on top of
-    this BMP — the server intentionally leaves the bottom-left corner blank.
+    Args:
+        data: the model produced by ``builder.build_data_model``. Must match
+            the schema expected by ``web/screen.jsx`` (see ``builder.py`` for
+            the field list).
+        output_path: where to write the BMP. Existing files are overwritten.
     """
-    refresh_label = "עודכן: " + (data.get("generated_at") or "—")[11:16]
-    _draw_text_rtl(draw, refresh_label, (790, top + 4), fonts.get("heebo", 18))
+    if not RENDER_HTML.exists():
+        raise FileNotFoundError(
+            f"render.html missing at {RENDER_HTML}. The web/ directory must ship "
+            "alongside server/."
+        )
+
+    png_bytes = _capture_artboard_png(data)
+
+    # Convert to 1-bit BMP. The threshold filter inside render.html already
+    # snapped pixels to black/white, but Pillow needs us to explicitly request
+    # a 1bpp BMP — Image.save() won't downconvert from RGBA to 1-bit on its own.
+    img = Image.open(io.BytesIO(png_bytes)).convert("L")
+    if img.size != (CANVAS_W, CANVAS_H):
+        # Defensive: Playwright should clip to viewport, but if it ever doesn't
+        # we'd rather catch it loudly than write a wrong-size BMP.
+        raise RuntimeError(
+            f"Screenshot dimensions {img.size} != expected ({CANVAS_W}, {CANVAS_H})"
+        )
+    bw = img.point(lambda v: 255 if v >= 128 else 0, mode="1")
+    bw.save(output_path, format="BMP")
+    logger.info("Wrote %sx%s 1-bit BMP to %s", CANVAS_W, CANVAS_H, output_path)
+
+
+def _capture_artboard_png(data: dict) -> bytes:
+    """Spin up Chromium, mount the screen with `data`, return a PNG of #artboard."""
+    # Serialize once outside the browser (json.dumps with ensure_ascii=False
+    # preserves Hebrew niqqud bytes). Then inject as a JS global before the
+    # page scripts run.
+    init_js = f"window.SCREEN_DATA = {json.dumps(data, ensure_ascii=False)};"
+
+    with _serve_dir(WEB_DIR) as port, sync_playwright() as p:
+        url = f"http://127.0.0.1:{port}/render.html"
+        # `chromium.launch()` defaults to headless. We pin viewport to exactly
+        # the artboard size so device pixel ratio = 1 (no fractional rounding
+        # at the 1-bit threshold step).
+        browser = p.chromium.launch()
+        try:
+            context = browser.new_context(
+                viewport={"width": CANVAS_W, "height": CANVAS_H},
+                device_scale_factor=1,
+            )
+            context.add_init_script(init_js)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function("window.SCREEN_READY === true", timeout=READY_TIMEOUT_MS)
+
+            artboard = page.locator("#artboard")
+            png_bytes = artboard.screenshot(type="png", omit_background=False)
+        finally:
+            browser.close()
+
+    return png_bytes
 
 
 if __name__ == "__main__":
-    """Render every fixture in tests/fixtures/ for visual review."""
-    import json
+    """Render every fixture under tests/fixtures/ for visual review."""
     import sys
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     fixtures_dir = Path(__file__).resolve().parent / "tests" / "fixtures"
-    output_dir = Path(__file__).resolve().parent.parent / "output"
+    output_dir = PROJECT_ROOT / "output"
     output_dir.mkdir(exist_ok=True)
 
     fixtures = sorted(fixtures_dir.glob("model_*.json"))
     if not fixtures:
-        print("No fixtures found. Run builder.py first to generate them.")
+        print("No fixtures found under tests/fixtures/. Generate some first.")
         sys.exit(1)
 
     for fx in fixtures:
-        with open(fx, encoding="utf-8") as f:
+        with fx.open(encoding="utf-8") as f:
             model = json.load(f)
         out = output_dir / fx.with_suffix(".bmp").name.replace("model_", "render_")
         render_to_bmp(model, str(out))
-        print(f"  {fx.name} → {out}")
+        print(f"  {fx.name} -> {out}")

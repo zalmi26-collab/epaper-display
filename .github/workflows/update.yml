@@ -29,6 +29,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r server/requirements.txt
 
+      - name: Install Playwright Chromium
+        # `--with-deps` brings in libnss3 / libatk1 / libxcomposite / etc. that
+        # Ubuntu CI runners don't ship with.
+        run: python -m playwright install chromium --with-deps
+
       - name: Materialize service account JSON
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

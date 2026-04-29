@@ -1,46 +1,38 @@
 {
-  "generated_at": "2026-04-27T21:00:00+03:00",
-  "next_update_at": "2026-04-27T22:00:00+03:00",
+  "generated_at": "2026-04-27T07:34:00+03:00",
+  "next_update_at": "2026-04-27T08:00:00+03:00",
   "clock_area": {
     "x": 520,
     "y": 0,
     "width": 280,
     "height": 120
   },
-  "date": {
-    "gregorian": "27.04.2026",
-    "hebrew": "י׳ אייר תשפ״ו",
-    "weekday_he": "יום שני"
-  },
-  "weather": {
-    "city": "בית שמש",
-    "temp_max": 23,
-    "temp_min": 13,
-    "precipitation_chance": 60,
-    "sunrise": "05:58",
-    "sunset": "19:16"
-  },
-  "shabbat_box": null,
-  "events_timed": [
+  "city": "בית שמש",
+  "weekday": "יום שני",
+  "hebrew_date": "י׳ אייר תשפ״ו",
+  "gregorian_date": "27.04.2026",
+  "time": "07:34",
+  "weather_kind": "sun",
+  "temp_max": 24,
+  "temp_min": 14,
+  "rain_chance": 10,
+  "all_day_events": ["יום הולדת אבא"],
+  "timed_events": [
     {
-      "start": "22:30",
-      "title": "וובינר עבודה",
+      "time": "16:30",
+      "title": "חוג כדורסל · יוסי",
       "is_tomorrow": false
     },
     {
-      "start": "14:30",
-      "title": "רופא ילדים, נועם",
-      "is_tomorrow": true
+      "time": "20:00",
+      "title": "הורים-מורים",
+      "is_tomorrow": false
     }
   ],
-  "events_all_day": [
-    {
-      "title": "יום הולדת אבא"
-    }
-  ],
+  "shabbat": null,
   "omer": {
     "day": 25,
-    "text": "הַיּוֹם חֲמִשָּׁה וְעֶשְׂרִים יוֹם, שֶׁהֵם שְׁלוֹשָׁה שָׁבוּעוֹת וְאַרְבָּעָה יָמִים לָעֽוֹמֶר"
+    "total": 49
   },
   "night_mode": false
 }

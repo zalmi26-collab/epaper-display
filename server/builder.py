@@ -1,13 +1,57 @@
 """Builder — merge fetcher outputs into the unified display data model.
 
-The output schema is documented in the spec section 5. This module is the only
-place that decides:
-  - whether to show the Shabbat / holiday box
+The output schema matches what ``web/screen.jsx`` consumes (Nest-Hub style
+Hebrew family display). This module is the only place that decides:
+
+  - whether to show the Shabbat / holiday strip (and which "mode" it's in)
   - whether to include the Omer count
   - which calendar events are still upcoming
-  - whether to switch to night mode
+  - whether the device should switch to night mode
+  - which weather glyph kind matches the current conditions
 
 All time comparisons are done in Asia/Jerusalem (the displayed timezone).
+
+Schema (subset relevant to the renderer; see ``web/screen.jsx`` for the full
+shape):
+
+    {
+        "city": str,
+        "weekday": str,                 # "יום שני"
+        "hebrew_date": str,             # "י׳ באייר תשפ״ו"
+        "gregorian_date": str,          # "27.04.2026"
+        "time": str,                    # "14:23" (drives greeting + countdown
+                                        #          + night mode in screen.jsx)
+
+        "weather_kind": str,            # 'sun'|'cloudy_sun'|'cloudy'|'rainy'|
+                                        # 'stormy'|'snow'|'night'|'fog'
+        "temp_max": int,
+        "temp_min": int,
+        "rain_chance": int,             # 0..100
+
+        "all_day_events": list[str],    # titles only
+        "timed_events": list[{
+            "time": "HH:MM",
+            "title": str,
+            "is_tomorrow": bool,
+        }],
+
+        "omer": {"day": int, "total": 49} | None,
+
+        "shabbat": {                    # only on Fri/Sat or chag windows
+            "parsha": str,
+            "candle_lighting": "HH:MM",
+            "sunset": "HH:MM",
+            "havdalah": "HH:MM",
+            "mode": "incoming"|"active"|"outgoing",
+        } | None,
+
+        "night_mode": bool,             # 00:00 <= hour < 05:00 (Asia/Jerusalem)
+
+        # Metadata, not used by the renderer but kept for downstream tooling.
+        "generated_at": ISO datetime,
+        "next_update_at": ISO datetime,
+        "clock_area": {x, y, width, height},
+    }
 """
 
 from __future__ import annotations
@@ -33,14 +77,19 @@ HEBREW_WEEKDAYS = {
     6: "יום ראשון",
 }
 
-NIGHT_MODE_START_HOUR = 23  # 23:00 (inclusive)
+# Night mode window. The design (web/screen.jsx) hard-codes 00:00..05:00 — keep
+# this in sync with that file or the firmware will see two different "night
+# mode" definitions.
+NIGHT_MODE_START_HOUR = 0   # 00:00 (inclusive)
 NIGHT_MODE_END_HOUR = 5     # 05:00 (exclusive)
 
-# Display-window rules for the Shabbat / holiday box
+# Display-window rules for the Shabbat / holiday strip
 SHABBAT_BOX_THURSDAY_START_HOUR = 6   # Friday Shabbat: visible from Thu 06:00
 HOLIDAY_BOX_SAME_DAY_START_HOUR = 12  # Other holidays: visible from candles_day 12:00
 
 CLOCK_AREA = {"x": 520, "y": 0, "width": 280, "height": 120}
+
+OMER_TOTAL = 49
 
 
 def build_data_model(
@@ -58,7 +107,8 @@ def build_data_model(
         now: timezone-aware reference time. Defaults to current time in Asia/Jerusalem.
 
     Returns:
-        dict matching the spec schema. Missing data is represented as None.
+        dict matching the schema above. Missing fields are returned as None
+        (the renderer handles those gracefully).
     """
     if now is None:
         now = datetime.now(JERUSALEM_TZ)
@@ -70,50 +120,116 @@ def build_data_model(
     today_iso = now.date().isoformat()
     today_hebcal = (hebcal.get("by_date", {}) if hebcal else {}).get(today_iso, {})
 
+    weather_dict = _normalize_weather(weather)
+    shabbat_dict = _build_shabbat(hebcal, now)
+
     return {
+        # Metadata (not consumed by screen.jsx, kept for logs/debug).
         "generated_at": now.replace(microsecond=0).isoformat(),
         "next_update_at": _next_hour(now).isoformat(),
         "clock_area": CLOCK_AREA,
-        "date": {
-            "gregorian": now.strftime("%d.%m.%Y"),
-            "hebrew": today_hebcal.get("hebrew_date"),
-            "weekday_he": today_hebcal.get("weekday_he") or HEBREW_WEEKDAYS[now.weekday()],
-        },
-        "weather": _normalize_weather(weather),
-        "shabbat_box": _build_shabbat_box(hebcal, now),
-        "events_timed": _build_events_timed(events, now),
-        "events_all_day": _build_events_all_day(events, now),
+
+        # Identity / dates.
+        "city": (weather_dict or {}).get("city") or "בית שמש",
+        "weekday": today_hebcal.get("weekday_he") or HEBREW_WEEKDAYS[now.weekday()],
+        "hebrew_date": today_hebcal.get("hebrew_date"),
+        "gregorian_date": now.strftime("%d.%m.%Y"),
+        "time": now.strftime("%H:%M"),
+
+        # Weather (flattened — screen.jsx reads them at top level).
+        "weather_kind": _derive_weather_kind(weather_dict, now),
+        "temp_max": (weather_dict or {}).get("temp_max"),
+        "temp_min": (weather_dict or {}).get("temp_min"),
+        "rain_chance": (weather_dict or {}).get("rain_chance"),
+
+        # Events.
+        "all_day_events": _build_events_all_day(events, now),
+        "timed_events": _build_events_timed(events, now),
+
+        # Hebrew calendar.
         "omer": _build_omer(today_hebcal),
+        "shabbat": shabbat_dict,
         "night_mode": _is_night_mode(now),
     }
 
 
+# ---------------------------------------------------------------------------
+# Weather
+# ---------------------------------------------------------------------------
+
+
 def _normalize_weather(weather: Optional[dict]) -> Optional[dict]:
+    """Map the fetcher dict to canonical keys used everywhere downstream."""
     if not weather:
         return None
     return {
         "city": "בית שמש",
         "temp_max": weather.get("temp_max"),
         "temp_min": weather.get("temp_min"),
-        "precipitation_chance": weather.get("precipitation_chance"),
+        "rain_chance": weather.get("precipitation_chance"),
         "sunrise": weather.get("sunrise"),
         "sunset": weather.get("sunset"),
     }
 
 
-def _build_shabbat_box(hebcal: Optional[dict], now: datetime) -> Optional[dict]:
-    """Decide whether to show the Shabbat / holiday box and build it.
+def _derive_weather_kind(weather: Optional[dict], now: datetime) -> str:
+    """Pick the closest weather glyph kind for the current conditions.
+
+    The screen has 8 glyphs but we only auto-select among the 5 we can infer
+    from temperature + precipitation + sun position. ('snow', 'stormy', 'fog'
+    require richer data than Open-Meteo's daily API gives us — they're left
+    available as manual overrides if a future fetcher provides them.)
+    """
+    if not weather:
+        return "sun"
+
+    rain = weather.get("rain_chance") or 0
+    sunrise = _split_hhmm_or_none(weather.get("sunrise"))
+    sunset = _split_hhmm_or_none(weather.get("sunset"))
+
+    is_night = False
+    if sunrise and sunset:
+        now_minutes = now.hour * 60 + now.minute
+        sr_minutes = sunrise[0] * 60 + sunrise[1]
+        ss_minutes = sunset[0] * 60 + sunset[1]
+        is_night = now_minutes < sr_minutes or now_minutes >= ss_minutes
+
+    if rain >= 60:
+        return "rainy"
+    if rain >= 30:
+        return "cloudy"
+    if is_night:
+        return "night"
+    if rain >= 10:
+        return "cloudy_sun"
+    return "sun"
+
+
+# ---------------------------------------------------------------------------
+# Shabbat / holiday strip
+# ---------------------------------------------------------------------------
+
+
+def _build_shabbat(hebcal: Optional[dict], now: datetime) -> Optional[dict]:
+    """Decide whether to show the Shabbat / holiday strip and build it.
 
     Window rules:
-      - Friday Shabbat: from Thursday 06:00 → that Saturday's havdalah
-      - Other holidays: from candles_day 12:00 → that holiday's havdalah
+      - Friday Shabbat: from Thursday 06:00 → that Saturday's havdalah.
+      - Other holidays: from candles_day 12:00 → that holiday's havdalah.
+
+    Mode (drives potential future visual states in screen.jsx):
+      - "incoming" : current time is before candle lighting.
+      - "active"   : between candle lighting and havdalah.
+      - "outgoing" : after havdalah but still inside the visibility window
+                     (currently we hide the strip at havdalah, so this is
+                     reserved — present in the schema for forward compat).
     """
     if not hebcal:
         return None
     by_date = hebcal.get("by_date", {})
     today = now.date()
 
-    # Find the next havdalah at or after today
+    # Find the next havdalah at or after today.
     havdalah_date = None
     havdalah_time = None
     for date_str in sorted(by_date.keys()):
@@ -128,7 +244,7 @@ def _build_shabbat_box(hebcal: Optional[dict], now: datetime) -> Optional[dict]:
     if havdalah_date is None:
         return None
 
-    # Find the most recent candles on or before that havdalah
+    # Find the most recent candles on or before that havdalah.
     candles_date = None
     candles_time = None
     candles_info: dict = {}
@@ -144,7 +260,6 @@ def _build_shabbat_box(hebcal: Optional[dict], now: datetime) -> Optional[dict]:
     if candles_date is None:
         return None
 
-    # Compute the start of the visibility window
     is_friday_shabbat = candles_date.weekday() == 4
     if is_friday_shabbat:
         start_naive = datetime.combine(
@@ -157,7 +272,6 @@ def _build_shabbat_box(hebcal: Optional[dict], now: datetime) -> Optional[dict]:
         )
     start = JERUSALEM_TZ.localize(start_naive)
 
-    # End of window: havdalah moment
     h_h, h_m = _split_hhmm(havdalah_time)
     end = JERUSALEM_TZ.localize(datetime.combine(havdalah_date, dtime(h_h, h_m)))
 
@@ -165,28 +279,38 @@ def _build_shabbat_box(hebcal: Optional[dict], now: datetime) -> Optional[dict]:
         return None
 
     havdalah_info = by_date.get(havdalah_date.isoformat(), {})
-    title, is_holiday = _shabbat_box_title(candles_info, havdalah_info, is_friday_shabbat)
+    parsha = _shabbat_strip_title(candles_info, havdalah_info, is_friday_shabbat)
+
+    # Mode: relative to candle lighting on `candles_date`.
+    c_h, c_m = _split_hhmm(candles_time)
+    candle_dt = JERUSALEM_TZ.localize(datetime.combine(candles_date, dtime(c_h, c_m)))
+    if now < candle_dt:
+        mode = "incoming"
+    elif now < end:
+        mode = "active"
+    else:
+        mode = "outgoing"
 
     return {
-        "title": title,
-        "candles": candles_time,
+        "parsha": parsha,
+        "candle_lighting": candles_time,
         "sunset": _approx_sunset_from_candles(candles_time),
         "havdalah": havdalah_time,
-        "is_holiday": is_holiday,
+        "mode": mode,
     }
 
 
-def _shabbat_box_title(
+def _shabbat_strip_title(
     candles_info: dict, havdalah_info: dict, is_friday_shabbat: bool
-) -> tuple[str, bool]:
-    """Pick the right title for the Shabbat / holiday box.
+) -> str:
+    """Pick the parsha / holiday name for the strip.
 
-    Only "major" holidays (Pesach Day 1, Shavuot, Rosh Hashana, etc.) are the
-    real reason candles are lit — those override the parasha title. Minor /
-    modern / fast / Rosh Chodesh holidays that happen to coincide with Shabbat
-    don't change the title.
+    Major holidays override the parasha title. Minor / modern / fast / Rosh
+    Chodesh holidays that happen to coincide with Shabbat don't.
 
-    Returns (title, is_holiday).
+    The "פרשת " prefix is stripped — screen.jsx puts the label "פרשת השבוע"
+    above the value separately, so passing in "פרשת אמור" would render as
+    "פרשת השבוע / פרשת אמור" (redundant).
     """
     parashah = havdalah_info.get("parashah") or candles_info.get("parashah")
 
@@ -197,15 +321,23 @@ def _shabbat_box_title(
             break
 
     if major_holiday:
-        return major_holiday, True
-    if is_friday_shabbat and parashah:
-        return parashah, False
+        return major_holiday
     if parashah:
-        return parashah, False
+        return _strip_parasha_prefix(parashah)
     fallback_holiday = candles_info.get("holiday") or havdalah_info.get("holiday")
     if fallback_holiday:
-        return fallback_holiday, True
-    return "שבת", False
+        return fallback_holiday
+    return "שבת"
+
+
+def _strip_parasha_prefix(parashah: str) -> str:
+    """'פרשת אמור' -> 'אמור'. Leaves non-prefixed names alone."""
+    if not parashah:
+        return ""
+    prefix = "פרשת "
+    if parashah.startswith(prefix):
+        return parashah[len(prefix):]
+    return parashah
 
 
 def _approx_sunset_from_candles(candles_hhmm: str) -> str:
@@ -216,11 +348,16 @@ def _approx_sunset_from_candles(candles_hhmm: str) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+# ---------------------------------------------------------------------------
+# Calendar events
+# ---------------------------------------------------------------------------
+
+
 def _build_events_timed(events: Optional[list[dict]], now: datetime) -> list[dict]:
     """Return upcoming timed events (today + tomorrow), sorted chronologically.
 
-    Schema: {"start": "HH:MM", "title": "...", "is_tomorrow": bool}.
-    is_tomorrow lets the renderer disambiguate '14:30 today' from '14:30 tomorrow'.
+    Output schema: ``{"time": "HH:MM", "title": str, "is_tomorrow": bool}``.
+    The renamed "start" → "time" matches what screen.jsx expects.
     """
     if not events:
         return []
@@ -239,7 +376,7 @@ def _build_events_timed(events: Optional[list[dict]], now: datetime) -> list[dic
     upcoming.sort(key=lambda pair: pair[0])
     return [
         {
-            "start": dt.strftime("%H:%M"),
+            "time": dt.strftime("%H:%M"),
             "title": title,
             "is_tomorrow": dt.date() > today,
         }
@@ -247,13 +384,17 @@ def _build_events_timed(events: Optional[list[dict]], now: datetime) -> list[dic
     ]
 
 
-def _build_events_all_day(events: Optional[list[dict]], now: datetime) -> list[dict]:
-    """Return all-day events whose date is today or tomorrow."""
+def _build_events_all_day(events: Optional[list[dict]], now: datetime) -> list[str]:
+    """Return all-day event titles whose date is today or tomorrow.
+
+    The new schema is ``list[str]`` (just titles) — screen.jsx shows the
+    first one as a bullet line, no need for richer per-event metadata.
+    """
     if not events:
         return []
     today = now.date()
     tomorrow = today + timedelta(days=1)
-    out = []
+    out: list[str] = []
     for ev in events:
         if not ev.get("all_day"):
             continue
@@ -267,24 +408,37 @@ def _build_events_all_day(events: Optional[list[dict]], now: datetime) -> list[d
             continue
         if start_date > tomorrow:
             continue
-        out.append({"title": ev["title"]})
+        out.append(ev["title"])
     return out
 
 
+# ---------------------------------------------------------------------------
+# Omer + night mode
+# ---------------------------------------------------------------------------
+
+
 def _build_omer(today_hebcal: dict) -> Optional[dict]:
+    """Schema: ``{"day": int, "total": 49}``. The full Hebrew phrase is built
+    inside screen.jsx (``buildOmerPhrase``) — we don't pass Hebcal's text here
+    because the design wants its own punctuation and the "הרחמן" wish line."""
     day = today_hebcal.get("omer_day")
     if day is None:
         return None
-    return {"day": day, "text": today_hebcal.get("omer_text")}
+    return {"day": day, "total": OMER_TOTAL}
 
 
 def _is_night_mode(now: datetime) -> bool:
     h = now.astimezone(JERUSALEM_TZ).hour
-    return h >= NIGHT_MODE_START_HOUR or h < NIGHT_MODE_END_HOUR
+    return NIGHT_MODE_START_HOUR <= h < NIGHT_MODE_END_HOUR
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
 
 
 def _next_hour(now: datetime) -> datetime:
-    return (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+    return now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
 
 
 def _parse_iso_to_jerusalem(value: str) -> datetime:
@@ -300,6 +454,15 @@ def _split_hhmm(hhmm: str) -> tuple[int, int]:
     return int(h), int(m)
 
 
+def _split_hhmm_or_none(value) -> Optional[tuple[int, int]]:
+    if not isinstance(value, str) or ":" not in value:
+        return None
+    try:
+        return _split_hhmm(value)
+    except (ValueError, AttributeError):
+        return None
+
+
 if __name__ == "__main__":
     """Manual smoke test using live fetcher output."""
     import json
@@ -313,8 +476,7 @@ if __name__ == "__main__":
 
     weather = fetch_weather()
     hebcal = fetch_hebcal(datetime.now(JERUSALEM_TZ).date(), days=8)
-    # Calendar likely None without creds — test resilience
-    events = None
+    events = None  # Calendar likely None without creds — test resilience
 
     model = build_data_model(weather, hebcal, events)
     print(json.dumps(model, indent=2, ensure_ascii=False))

@@ -17,7 +17,10 @@ GEONAME_ID = 295089  # Bet Shemesh (used by Hebcal)
 CITY_NAME_HE = "בית שמש"
 
 # ── Refresh schedule ────────────────────────────────────────────────────────
-NIGHT_MODE_START_HOUR = 23
+# Night mode window. Kept here for documentation; the authoritative copy lives
+# in builder.py (and must match web/screen.jsx). Updated to 00:00..05:00 to
+# align with the new design.
+NIGHT_MODE_START_HOUR = 0
 NIGHT_MODE_END_HOUR = 5
 
 # ── Output paths ────────────────────────────────────────────────────────────

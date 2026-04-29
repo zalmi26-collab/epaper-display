@@ -6,23 +6,26 @@
 
 הפרויקט מורכב משני רכיבים נפרדים:
 
-- **שרת תוכן (Python)** רץ ב-GitHub Actions כל שעה. שולף נתונים מ-Open-Meteo, Hebcal ו-Google Calendar, מרכיב BMP מונוכרומי 800×480, ושומר אותו ב-branch `gh-pages` נגיש ב-HTTPS.
+- **שרת תוכן (Python)** רץ ב-GitHub Actions כל שעה. שולף נתונים מ-Open-Meteo, Hebcal ו-Google Calendar, בונה מודל-נתונים, מריץ את העיצוב (`web/screen.jsx`) ב-Chromium headless, מצלם את הקנבס 800×480, ממיר ל-BMP 1-bit, ושומר אותו ב-branch `gh-pages` נגיש ב-HTTPS.
 - **פירמוואר ESP32 (Arduino)** מתעורר מ-deep sleep כל דקה לציור שעון מקומי, וכל שעה להורדת תמונה עדכנית מהשרת.
 
 ```
-┌──────────────────────────┐         ┌─────────────────────────┐
-│  GitHub Actions (cron)   │         │   ESP32-C3 (סוללה)      │
-│  cron: 0 * * * *         │         │                         │
-│  fetch APIs ──┐          │         │  כל דקה: שעון בלבד      │
-│  builder → JSON model    │  HTTPS  │  כל שעה: full refresh   │
-│  Pillow → BMP            │ ◄──────►│   ↓                     │
-│  push gh-pages branch    │         │  GxEPD2 → e-paper       │
-│   ↓                      │         │  שעון מצויר מעל         │
-│  USER.github.io/.../bmp  │         │  deep sleep             │
-└──────────────────────────┘         └─────────────────────────┘
+┌────────────────────────────┐         ┌─────────────────────────┐
+│  GitHub Actions (cron)     │         │   ESP32-C3 (סוללה)      │
+│  cron: 0 * * * *           │         │                         │
+│  fetch APIs ──┐            │         │  כל דקה: שעון בלבד      │
+│  builder → JSON model      │  HTTPS  │  כל שעה: full refresh   │
+│  Playwright + screen.jsx → │ ◄──────►│   ↓                     │
+│    headless Chromium → BMP │         │  GxEPD2 → e-paper       │
+│  push gh-pages branch      │         │  שעון מצויר מעל         │
+│   ↓                        │         │  deep sleep             │
+│  USER.github.io/.../bmp    │         │                         │
+└────────────────────────────┘         └─────────────────────────┘
 ```
 
 המסך מחלק את התמונה ל-2 שכבות: השרת מצייר הכל **חוץ** מאזור 280×120 בפינה הימנית-עליונה, וה-ESP32 מצייר שעון באותו אזור ב-partial refresh חסכוני בכל דקה.
+
+העיצוב הויזואלי עצמו (קלפים מעוגלים, אייקוני Material Symbols, פונט Rubik) חי ב-`web/screen.jsx` — קומפוננטת React. מנוע הרינדור (`server/renderer.py`) הוא wrapper דק מסביב ל-Playwright Chromium שטוען את `web/render.html`, מזריק את מודל הנתונים, מצלם את הקנבס, ומסף ל-1-bit.
 
 ## תכונות
 
@@ -33,7 +36,7 @@
 - קוביית שבת/חג מיום חמישי 06:00 עד יציאת השבת/החג (פרשה / שם חג, נרות, שקיעה, הבדלה)
 - עומר עם ניקוד מלא בתקופת הספירה (ט"ז ניסן עד ה' סיוון)
 - אירועי יומן Google: היום + מחר, רק עתידיים, עם תיוג "(מחר)" לאירועים בעוד יום
-- מצב לילה (23:00-05:00): מסך "לילה טוב" עם ירח וכוכבים, deep sleep ארוך של 6 שעות
+- מצב לילה (00:00-05:00): מסך מינימלי הפוך (לבן על שחור) עם שעון ענק, ירח עם פאזה אמיתית (אלגוריתם Conway), ואירוע ראשון של מחר. deep sleep ארוך של 6 שעות
 - אינדיקטור סוללה (4 רמות) ואייקון שגיאה כש-3 הורדות אחרונות נכשלו
 
 ## דרישות חומרה
@@ -158,8 +161,7 @@ python firmware/fonts/generate_clock_font.py
 │   ├── main.py              orchestration
 │   ├── config.py            constants + env vars
 │   ├── builder.py           data model logic
-│   ├── renderer.py          Pillow → 1-bit BMP
-│   ├── night_mode.py        static night image
+│   ├── renderer.py          Playwright Chromium → 1-bit BMP
 │   ├── fetchers/
 │   │   ├── weather.py       Open-Meteo
 │   │   ├── hebcal.py        Hebcal + converter API
@@ -167,8 +169,10 @@ python firmware/fonts/generate_clock_font.py
 │   └── tests/
 │       ├── test_builder.py
 │       ├── test_renderer.py
-│       ├── fixtures/        sample data models
-│       └── snapshots/       expected BMP outputs
+│       └── fixtures/        sample data models
+├── web/
+│   ├── render.html          single-screen render target (loaded by Playwright)
+│   └── screen.jsx           the React component — layout, cards, night mode
 ├── firmware/
 │   ├── epaper_display.ino   entry + state machine
 │   ├── config.h             WiFi creds, URL, pins
@@ -228,9 +232,10 @@ NIGHT_MODE_END_HOUR = 5
 - ה-Action עובד אבל ה-ESP32 לא מצליח להוריד — בדוק `setInsecure()` ב-`network.cpp` (תוקף אישור SSL מבוטל בכוונה)
 - אייקון X בפינה הצד תחתונה ימצוץ אם 3 הורדות נכשלו ברצף
 
-### עברית מוצגת הפוך ב-BMP
-- ודא ש-`python-bidi` מותקן: `pip install python-bidi`
-- אם הניקוד לא מוצג בעומר — ודא שמשתמשים ב-`Frank Ruhl Libre` ולא ב-`Heebo` (Heebo חסר את `U+05BD METEG`)
+### עברית/ניקוד לא מוצגים נכון ב-BMP
+- העיצוב מסתמך על Rubik (Hebrew + Latin) ועל Material Symbols Outlined מ-Google Fonts CDN. ודא שיש גישה לאינטרנט ב-CI.
+- אם רינדור ה-omer חסר ניקוד — ודא ש-`document.fonts.ready` מסתיים לפני הצילום (renderer.py כבר עושה את זה דרך `window.SCREEN_READY`).
+- אם Material Symbols מופיעים כטקסט גולמי (`wb_sunny`, `event` וכו׳) במקום אייקונים — ודא ש-Chromium נטען עם font-feature-settings: 'liga' (קיים ב-render.html).
 
 ### הסוללה מתרוקנת מהר
 - בדוק שאין `Serial.print` בלולאה במצב production

@@ -1,10 +1,12 @@
 """Entry point — runs every hour from GitHub Actions (and manually for dev).
 
 Pipeline:
-  1. Fetch weather, Hebcal calendar, Google Calendar events
-  2. Build the unified data model (server/builder.py)
-  3. If night_mode → render night-mode BMP; else → render the day BMP
-  4. Write the result to output/display.bmp for gh-pages publishing
+  1. Fetch weather, Hebcal calendar, Google Calendar events.
+  2. Build the unified data model (server/builder.py).
+  3. Render the day OR night view through web/screen.jsx (Playwright).
+     Night mode (00:00..05:00) is handled inside screen.jsx — main.py just
+     hands off the data model and the renderer takes care of the routing.
+  4. Write the result to output/display.bmp for gh-pages publishing.
 
 Exit codes:
   0 — success, BMP written
@@ -27,7 +29,6 @@ from config import CALENDAR_ID, OUTPUT_DAY_BMP, OUTPUT_DIR, SERVICE_ACCOUNT_PATH
 from fetchers.gcal import fetch_events
 from fetchers.hebcal import fetch_hebcal
 from fetchers.weather import fetch_weather
-from night_mode import render_night_mode
 from renderer import render_to_bmp
 
 logger = logging.getLogger("epaper")
@@ -63,21 +64,17 @@ def main() -> int:
 
     data = build_data_model(weather, hebcal, events, now)
     logger.info(
-        "model: night_mode=%s shabbat_box=%s events=%d/%d omer=%s",
+        "model: night_mode=%s shabbat=%s timed=%d all_day=%d omer=%s weather_kind=%s",
         data["night_mode"],
-        bool(data["shabbat_box"]),
-        len(data["events_timed"]),
-        len(data["events_all_day"]),
+        bool(data["shabbat"]),
+        len(data["timed_events"]),
+        len(data["all_day_events"]),
         bool(data["omer"]),
+        data["weather_kind"],
     )
 
-    out_path = str(OUTPUT_DAY_BMP)
-    if data["night_mode"]:
-        render_night_mode(out_path)
-    else:
-        render_to_bmp(data, out_path)
-
-    logger.info("Wrote %s", out_path)
+    render_to_bmp(data, str(OUTPUT_DAY_BMP))
+    logger.info("Wrote %s", OUTPUT_DAY_BMP)
     return 0
 
 

@@ -1,41 +1,33 @@
 {
-  "generated_at": "2026-04-27T23:30:00+03:00",
-  "next_update_at": "2026-04-28T00:00:00+03:00",
+  "generated_at": "2026-04-29T02:30:00+03:00",
+  "next_update_at": "2026-04-29T03:00:00+03:00",
   "clock_area": {
     "x": 520,
     "y": 0,
     "width": 280,
     "height": 120
   },
-  "date": {
-    "gregorian": "27.04.2026",
-    "hebrew": "י׳ אייר תשפ״ו",
-    "weekday_he": "יום שני"
-  },
-  "weather": {
-    "city": "בית שמש",
-    "temp_max": 23,
-    "temp_min": 13,
-    "precipitation_chance": 60,
-    "sunrise": "05:58",
-    "sunset": "19:16"
-  },
-  "shabbat_box": null,
-  "events_timed": [
+  "city": "בית שמש",
+  "weekday": "יום רביעי",
+  "hebrew_date": "י״ב אייר תשפ״ו",
+  "gregorian_date": "29.04.2026",
+  "time": "02:30",
+  "weather_kind": "night",
+  "temp_max": 22,
+  "temp_min": 11,
+  "rain_chance": 0,
+  "all_day_events": [],
+  "timed_events": [
     {
-      "start": "14:30",
-      "title": "רופא ילדים, נועם",
+      "time": "07:30",
+      "title": "בית ספר",
       "is_tomorrow": true
     }
   ],
-  "events_all_day": [
-    {
-      "title": "יום הולדת אבא"
-    }
-  ],
+  "shabbat": null,
   "omer": {
-    "day": 25,
-    "text": "הַיּוֹם חֲמִשָּׁה וְעֶשְׂרִים יוֹם, שֶׁהֵם שְׁלוֹשָׁה שָׁבוּעוֹת וְאַרְבָּעָה יָמִים לָעֽוֹמֶר"
+    "day": 27,
+    "total": 49
   },
   "night_mode": true
 }

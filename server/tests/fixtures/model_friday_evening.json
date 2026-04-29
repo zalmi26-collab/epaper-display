@@ -7,31 +7,27 @@
     "width": 280,
     "height": 120
   },
-  "date": {
-    "gregorian": "01.05.2026",
-    "hebrew": "י״ד אייר תשפ״ו",
-    "weekday_he": "יום שישי"
-  },
-  "weather": {
-    "city": "בית שמש",
-    "temp_max": 23,
-    "temp_min": 13,
-    "precipitation_chance": 60,
-    "sunrise": "05:58",
-    "sunset": "19:16"
-  },
-  "shabbat_box": {
-    "title": "פרשת אמור",
-    "candles": "19:02",
+  "city": "בית שמש",
+  "weekday": "יום שישי",
+  "hebrew_date": "י״ד אייר תשפ״ו",
+  "gregorian_date": "01.05.2026",
+  "time": "19:30",
+  "weather_kind": "cloudy_sun",
+  "temp_max": 26,
+  "temp_min": 16,
+  "rain_chance": 0,
+  "all_day_events": [],
+  "timed_events": [],
+  "shabbat": {
+    "parsha": "אמור",
+    "candle_lighting": "19:02",
     "sunset": "19:20",
     "havdalah": "20:01",
-    "is_holiday": false
+    "mode": "active"
   },
-  "events_timed": [],
-  "events_all_day": [],
   "omer": {
     "day": 29,
-    "text": "הַיּוֹם תִּשְׁעָה וְעֶשְׂרִים יוֹם, שֶׁהֵם אַרְבָּעָה שָׁבוּעוֹת וְיוֹם אֶחָד לָעֽוֹמֶר"
+    "total": 49
   },
   "night_mode": false
 }

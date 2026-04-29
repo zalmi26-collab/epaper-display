@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Family E-Paper Screen — Render Target</title>
+
+<!-- Google Fonts: Rubik (300/400/500/600/700) + Material Symbols Outlined -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
+
+<style>
+  /* Reset: anything Chromium adds (margins, scrollbars) must not bleed into the
+     screenshot. The body is exactly 800x480, the size we screenshot. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 800px;
+    height: 480px;
+    overflow: hidden;
+    background: #fff;
+    font-family: 'Rubik', system-ui, sans-serif;
+  }
+  * { -webkit-font-smoothing: antialiased; }
+
+  /* Material Symbols ligature support (verbatim from mockup.html). */
+  .material-symbols-outlined {
+    font-family: 'Material Symbols Outlined';
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The artboard — exactly 800x480, threshold-filtered to look like 1-bit. */
+  #artboard {
+    width: 800px;
+    height: 480px;
+    background: #fff;
+    filter: url(#threshold1bit);
+  }
+</style>
+
+<!-- React + Babel for in-browser JSX (matches the mockup's setup, no build step). -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<!-- The 1-bit threshold filter that wraps the artboard.
+     Verbatim from mockup.html — clamps every pixel to pure black or pure white
+     at the 50% line so the rendered SVG/text matches the e-paper output. -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <filter id="threshold1bit" colorInterpolationFilters="sRGB">
+      <feColorMatrix type="matrix" values="0.299 0.587 0.114 0 0
+                                            0.299 0.587 0.114 0 0
+                                            0.299 0.587 0.114 0 0
+                                            0     0     0     1 0"/>
+      <feComponentTransfer>
+        <feFuncR type="discrete" tableValues="0 1"/>
+        <feFuncG type="discrete" tableValues="0 1"/>
+        <feFuncB type="discrete" tableValues="0 1"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+</svg>
+
+<div id="artboard"></div>
+
+<!-- The screen rendering logic (top-level Screen export attaches to window). -->
+<script type="text/babel" src="screen.jsx"></script>
+
+<!-- Boot: wait for fonts → mount Screen → flag ready for Playwright to capture. -->
+<script type="text/babel" data-presets="env,react">
+/* Quote pool (lifted verbatim from the design's mockup.html so renders match
+   what the user iterated on). Edit this list to extend the rotation. */
+const QUOTES = [
+  { text: 'הסוד לאושר הוא לחפש את הקטן ביום-יום.', icon: 'sentiment_satisfied' },
+  { text: 'מי שלא מסכן — לא מרוויח. מי שלא מסתכן — לא מתחתן.', attribution: 'פתגם', icon: 'favorite' },
+  { text: 'למה הספר הלך לרופא? כי היו לו דפים שבורים!', icon: 'mood' },
+  { text: 'יום חדש זו הזדמנות חדשה.', icon: 'wb_twilight' },
+  { text: 'איזה ים הכי קטן? ים-בוקר!', icon: 'sentiment_very_satisfied' },
+  { text: '״האדם איננו אלא תבנית נוף מולדתו.״', attribution: 'שאול טשרניחובסקי', icon: 'format_quote' },
+  { text: 'מה אומר אגוז כשהוא נופל? אגוזים!', icon: 'mood' },
+  { text: '״כל הכבוד שאתה מחזיק מעמד.״', icon: 'thumb_up' },
+];
+function quoteForDate(dateStr, hour) {
+  if (!dateStr) return QUOTES[0];
+  const seed = [...dateStr].reduce((a, c) => a + c.charCodeAt(0), 0);
+  const slot = hour < 14 ? 0 : 1;
+  return QUOTES[(seed * 2 + slot) % QUOTES.length];
+}
+
+/* Pull data from Playwright (set via page.add_init_script before navigation).
+   Fallback to a sample so the page is openable directly in a browser for debug. */
+const SAMPLE = {
+  city: 'בית שמש',
+  weekday: 'יום שני',
+  hebrew_date: 'י׳ באייר תשפ״ו',
+  gregorian_date: '27.04.2026',
+  time: '07:34',
+  weather_kind: 'sun',
+  temp_max: 24, temp_min: 14, rain_chance: 10,
+  all_day_events: ['יום הולדת אבא'],
+  timed_events: [
+    { time: '16:30', title: 'חוג כדורסל · יוסי', is_tomorrow: false },
+    { time: '20:00', title: 'הורים-מורים', is_tomorrow: false },
+  ],
+  omer: { day: 24, total: 49 },
+};
+
+const data = (typeof window !== 'undefined' && window.SCREEN_DATA) || SAMPLE;
+
+/* If the server didn't pre-pick a quote, derive one deterministically here. */
+if (!data.quote) {
+  const hour = parseInt(String(data.time || '12'), 10) || 12;
+  data.quote = quoteForDate(data.gregorian_date, hour);
+}
+
+function App() {
+  return <Screen data={data} />;
+}
+
+/* Mount when fonts are ready. Otherwise the threshold filter rasterizes glyph
+   fallbacks (or worse, the literal Material Symbols ligature names) before the
+   real glyphs arrive. */
+function mount() {
+  const root = ReactDOM.createRoot(document.getElementById('artboard'));
+  root.render(<App />);
+  /* Two RAFs let React commit + the SVG filter rasterize, then signal Playwright. */
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    setTimeout(() => { window.SCREEN_READY = true; }, 80);
+  }));
+}
+
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(mount);
+} else {
+  /* Fallback for very old engines — Chromium has document.fonts. */
+  setTimeout(mount, 600);
+}
+</script>
+</body>
+</html>
